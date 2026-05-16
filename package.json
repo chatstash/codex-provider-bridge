@@ -18,6 +18,9 @@
     "serve": "node dist/src/cli.js serve",
     "stop": "node dist/src/cli.js stop",
     "status": "node dist/src/cli.js status",
+    "install-startup": "node dist/src/cli.js install-startup",
+    "uninstall-startup": "node dist/src/cli.js uninstall-startup",
+    "startup-status": "node dist/src/cli.js startup-status",
     "doctor": "node dist/src/cli.js doctor",
     "start": "node dist/src/cli.js start"
   },

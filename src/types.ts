@@ -49,6 +49,7 @@ export interface DoctorResult {
   apiKeySource: ApiKeySource | null;
   portOpen: boolean;
   daemon: DaemonStatus;
+  startup: StartupStatus;
   codexConfigExists: boolean;
   bridgeProviderConfigured: boolean;
   modelProviderIsBridge: boolean;
@@ -70,6 +71,29 @@ export interface DaemonStatus {
   running: boolean;
   pid?: number;
   stale: boolean;
+}
+
+export type StartupMethod = "windows-task-scheduler" | "systemd-user";
+
+export interface StartupStatus {
+  supported: boolean;
+  installed: boolean;
+  method?: StartupMethod;
+  taskName?: string;
+  scriptPath?: string;
+  serviceName?: string;
+  servicePath?: string;
+  detail?: string;
+}
+
+export interface StartupInstallResult extends StartupStatus {
+  supported: true;
+  installed: true;
+  method: StartupMethod;
+}
+
+export interface StartupUninstallResult extends StartupStatus {
+  removed: boolean;
 }
 
 export interface StartDaemonResult {

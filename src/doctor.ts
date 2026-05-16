@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { loadBridgeConfig, publicBridgeConfig, resolveApiKey } from "./config.js";
 import { canConnect, daemonStatus } from "./daemon.js";
 import { getBridgeConfigPath, getBridgeHome, getCodexConfigPath } from "./paths.js";
+import { startupStatus } from "./startup.js";
 import { hasBridgeProvider, topLevelModelProvider } from "./toml-patch.js";
 import type { DoctorResult } from "./types.js";
 
@@ -54,6 +55,7 @@ export async function doctor(): Promise<DoctorResult> {
     apiKeySource: key.source,
     portOpen: await canConnect(config.host, config.port),
     daemon: await daemonStatus(bridgeHome),
+    startup: await startupStatus({ bridgeHome }),
     codexConfigExists,
     bridgeProviderConfigured: hasBridgeProvider(codexConfig, config.providerId),
     modelProviderIsBridge: topLevelModelProvider(codexConfig) === config.providerId,
@@ -97,6 +99,13 @@ export function formatDoctorReport(result: DoctorResult): string {
         : `未监听，请运行 codex-provider-bridge start`
     }`,
     `${mark(true)} 日志文件: ${result.daemon.logPath}`,
+    `${mark(true)} 开机自启: ${
+      !result.startup.supported
+        ? "当前系统暂不支持"
+        : result.startup.installed
+          ? `已安装 (${result.startup.method})`
+          : "未安装，可运行 codex-provider-bridge install-startup"
+    }`,
     `${mark(Boolean(result.loginStatus))} Codex 登录: ${result.loginStatus || "未检测到，请先在 Codex 中登录 ChatGPT"}`,
     "",
     result.apiKeyPresent && result.bridgeProviderConfigured && result.modelProviderIsBridge && result.daemon.running && result.portOpen

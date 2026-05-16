@@ -6,6 +6,15 @@
 Codex App -> http://127.0.0.1:11435/v1 -> 你的 OpenAI 兼容 /v1 地址
 ```
 
+## 为什么用它
+
+- 保留 Codex 的 ChatGPT 登录体验，不需要改动 `auth.json` 或伪装 ChatGPT 登录状态。
+- 只在 `~/.codex/config.toml` 中增加一个本地 provider，恢复和排障都比较清晰。
+- 对上游服务使用标准 OpenAI 兼容 `/v1` 接口，方便接入自建网关、代理或其他兼容服务。
+- 默认只监听 `127.0.0.1`，并在转发时替换为你的上游 API Key，不把请求体或 token 写入日志。
+- 提供 `doctor` 体检命令，能一次检查配置、API Key、后台进程、本地端口、Codex provider 和登录状态。
+- 支持 Windows 和 Linux 登录后自动启动，日常使用不需要手动打开终端。
+
 ## 3 步安装
 
 要求：Node.js 20+，以及你自己的上游服务地址和 API Key。
@@ -38,6 +47,36 @@ codex-provider-bridge stop
 
 ```powershell
 codex-provider-bridge serve
+```
+
+## 开机自启
+
+如果希望重启电脑后自动启动桥接服务，可以安装当前用户的登录自启项：
+
+```powershell
+codex-provider-bridge install-startup
+codex-provider-bridge startup-status
+```
+
+Windows 会创建一个当前用户的任务计划程序项，登录后自动运行 `codex-provider-bridge start`。
+
+Linux 会创建并启用一个 systemd user service：
+
+```bash
+codex-provider-bridge install-startup
+codex-provider-bridge startup-status
+```
+
+Linux 默认是在当前用户登录后启动。如果你希望机器重启后即使用户还没登录也启动，可以为该用户启用 linger：
+
+```bash
+loginctl enable-linger "$USER"
+```
+
+移除自启：
+
+```powershell
+codex-provider-bridge uninstall-startup
 ```
 
 ## Windows PowerShell 示例
@@ -88,6 +127,9 @@ codex-provider-bridge restore
 codex-provider-bridge setup
 codex-provider-bridge start
 codex-provider-bridge status
+codex-provider-bridge install-startup
+codex-provider-bridge startup-status
+codex-provider-bridge uninstall-startup
 codex-provider-bridge doctor
 codex-provider-bridge stop
 codex-provider-bridge restore
@@ -101,6 +143,10 @@ npm run build
 npm run setup
 npm start
 npm run status
+npm run install-startup
+npm run startup-status
+npm run uninstall-startup
+npm run doctor
 ```
 
 ## 常见问题
