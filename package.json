@@ -1,0 +1,45 @@
+{
+  "name": "codex-provider-bridge",
+  "version": "0.1.0",
+  "description": "Local OpenAI-compatible provider bridge for Codex ChatGPT auth mode.",
+  "type": "module",
+  "bin": {
+    "codex-provider-bridge": "./dist/src/cli.js"
+  },
+  "files": [
+    "dist/src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test \"dist/test/*.test.js\"",
+    "prepare": "npm run build",
+    "setup": "node dist/src/cli.js setup",
+    "serve": "node dist/src/cli.js serve",
+    "doctor": "node dist/src/cli.js doctor",
+    "start": "node dist/src/cli.js serve"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chatstash/codex-provider-bridge.git"
+  },
+  "homepage": "https://github.com/chatstash/codex-provider-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/chatstash/codex-provider-bridge/issues"
+  },
+  "keywords": [
+    "codex",
+    "openai",
+    "proxy",
+    "provider"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
