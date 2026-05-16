@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-import { assertConfigured, loadBridgeConfig, mergeConfig, saveBridgeConfig } from "./config.js";
+import { assertConfigured, loadBridgeConfig, mergeConfig, resolveApiKey, saveBridgeConfig } from "./config.js";
 import { canConnect, daemonStatus, startDaemon, stopDaemon } from "./daemon.js";
 import { doctor, formatDoctorReport } from "./doctor.js";
 import { installBridge, restoreBridge } from "./install.js";
 import { defaultConfig, getBridgeConfigPath } from "./paths.js";
 import { serve } from "./proxy.js";
 import { setupBridge } from "./setup.js";
+import { installStartup, startupStatus, uninstallStartup } from "./startup.js";
+import type { StartupStatus } from "./types.js";
 
 interface ParsedArgs {
   command: string;
@@ -45,6 +47,12 @@ Commands:
   stop        Stop the background bridge.
   status      Show background bridge status.
   serve       Start the bridge in the foreground for debugging.
+  install-startup
+              Start the bridge automatically after Windows/Linux login.
+  uninstall-startup
+              Remove the Windows/Linux autostart entry.
+  startup-status
+              Show whether autostart is installed.
   install     Backup and patch ~/.codex/config.toml.
   restore     Restore ~/.codex/config.toml from the last install backup.
   doctor      Check bridge, Codex config, API key, and login status.
@@ -98,8 +106,9 @@ async function main(): Promise<void> {
     console.log("");
     console.log("下一步:");
     console.log("  1. 运行 codex-provider-bridge start");
-    console.log("  2. 重启 Codex");
-    console.log("  3. 如果有问题，运行 codex-provider-bridge doctor");
+    console.log("  2. 如需开机自启，运行 codex-provider-bridge install-startup");
+    console.log("  3. 重启 Codex");
+    console.log("  4. 如果有问题，运行 codex-provider-bridge doctor");
     return;
   }
 
@@ -144,6 +153,37 @@ async function main(): Promise<void> {
     console.log(`本地端口: ${portOpen ? `正在监听 http://${config.host}:${config.port}/v1` : "未监听"}`);
     console.log(`状态文件: ${status.statePath}`);
     console.log(`日志文件: ${status.logPath}`);
+    return;
+  }
+
+  if (command === "install-startup") {
+    const config = await loadBridgeConfig();
+    assertConfigured(config);
+    if (!resolveApiKey(config).apiKey) {
+      throw new Error(`Missing API key. Run "codex-provider-bridge setup" or set ${config.apiKeyEnv} before installing autostart.`);
+    }
+    const result = await installStartup();
+    console.log("开机自启已安装。");
+    console.log(formatStartupStatus(result));
+    if (result.method === "systemd-user") {
+      console.log("Linux 提示: 默认在当前用户登录后启动；若需要未登录也启动，可启用 systemd linger。");
+    }
+    return;
+  }
+
+  if (command === "uninstall-startup") {
+    const result = await uninstallStartup();
+    if (result.removed) {
+      console.log("开机自启已移除。");
+    } else {
+      console.log("开机自启未安装。");
+    }
+    console.log(formatStartupStatus(result));
+    return;
+  }
+
+  if (command === "startup-status") {
+    console.log(formatStartupStatus(await startupStatus()));
     return;
   }
 
@@ -205,4 +245,20 @@ function formatError(error: unknown): string {
 需要帮助时可以运行 codex-provider-bridge doctor 查看状态。`;
   }
   return String(error);
+}
+
+function formatStartupStatus(status: StartupStatus): string {
+  if (!status.supported) {
+    return "开机自启: 当前系统暂不支持。";
+  }
+
+  const target = status.method === "systemd-user"
+    ? `${status.serviceName} (${status.servicePath})`
+    : `${status.taskName} (${status.scriptPath})`;
+
+  return [
+    `开机自启: ${status.installed ? "已安装" : "未安装"}`,
+    `方式: ${status.method}`,
+    `目标: ${target}`
+  ].join("\n");
 }
