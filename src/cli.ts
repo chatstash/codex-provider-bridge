@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { loadBridgeConfig, mergeConfig, saveBridgeConfig } from "./config.js";
+import { assertConfigured, loadBridgeConfig, mergeConfig, saveBridgeConfig } from "./config.js";
+import { canConnect, daemonStatus, startDaemon, stopDaemon } from "./daemon.js";
 import { doctor, formatDoctorReport } from "./doctor.js";
 import { installBridge, restoreBridge } from "./install.js";
 import { defaultConfig, getBridgeConfigPath } from "./paths.js";
@@ -40,7 +41,10 @@ function usage(): string {
 
 Commands:
   setup       Run the beginner-friendly setup wizard.
-  serve       Start the local provider bridge.
+  start       Start the bridge in the background.
+  stop        Stop the background bridge.
+  status      Show background bridge status.
+  serve       Start the bridge in the foreground for debugging.
   install     Backup and patch ~/.codex/config.toml.
   restore     Restore ~/.codex/config.toml from the last install backup.
   doctor      Check bridge, Codex config, API key, and login status.
@@ -48,8 +52,8 @@ Commands:
 Options:
   --host <host>             Default: 127.0.0.1
   --port <port>             Default: 11435
-  --upstream <url>          Default: https://sub2api.fcyaxing.com/v1
-  --api-key-env <name>      Default: SUB2API_API_KEY
+  --upstream <url>          Required for first setup.
+  --api-key-env <name>      Default: OPENAI_COMPAT_API_KEY
   --api-key <key>           Save API key to local bridge config.
   --provider-id <id>        Default: codex_provider_bridge
   --json                    Print machine-readable output for doctor.
@@ -93,9 +97,53 @@ async function main(): Promise<void> {
     console.log(`备份已创建: ${result.backupPath}`);
     console.log("");
     console.log("下一步:");
-    console.log("  1. 运行 codex-provider-bridge serve");
+    console.log("  1. 运行 codex-provider-bridge start");
     console.log("  2. 重启 Codex");
     console.log("  3. 如果有问题，运行 codex-provider-bridge doctor");
+    return;
+  }
+
+  if (command === "start") {
+    const result = await startDaemon();
+    if (result.alreadyRunning) {
+      console.log(`后台服务已经在运行，PID ${result.pid}`);
+    } else {
+      console.log(`后台服务已启动，PID ${result.pid}`);
+    }
+    console.log(`本地地址: ${result.url}`);
+    console.log(`日志文件: ${result.logPath}`);
+    console.log("下一步: 重启 Codex。查看状态可运行 codex-provider-bridge status。");
+    return;
+  }
+
+  if (command === "stop") {
+    const result = await stopDaemon();
+    if (result.stopped) {
+      console.log(`后台服务已停止，PID ${result.pid}`);
+    } else if (result.pid) {
+      console.log(`后台服务未运行，已清理失效状态文件: ${result.statePath}`);
+    } else {
+      console.log("后台服务未运行。");
+    }
+    return;
+  }
+
+  if (command === "status") {
+    const status = await daemonStatus();
+    const config = await configFromSavedAndFlags(flags);
+    const portOpen = await canConnect(config.host, config.port);
+    if (status.running) {
+      console.log(`后台服务: 正在运行，PID ${status.pid}`);
+    } else if (status.stale) {
+      console.log(`后台服务: 未运行，状态文件已失效，PID ${status.pid}`);
+      console.log("修复: 运行 codex-provider-bridge start 重新启动。");
+    } else {
+      console.log("后台服务: 未运行");
+      console.log("启动: codex-provider-bridge start");
+    }
+    console.log(`本地端口: ${portOpen ? `正在监听 http://${config.host}:${config.port}/v1` : "未监听"}`);
+    console.log(`状态文件: ${status.statePath}`);
+    console.log(`日志文件: ${status.logPath}`);
     return;
   }
 
@@ -106,12 +154,13 @@ async function main(): Promise<void> {
 
   if (command === "install") {
     const config = await configFromSavedAndFlags(flags);
+    assertConfigured(config);
     await saveBridgeConfig(config, getBridgeConfigPath());
     const result = await installBridge({ config });
     console.log(`Codex 配置已更新: ${result.codexConfigPath}`);
     console.log(`备份已创建: ${result.backupPath}`);
     console.log(`桥接配置: ${result.bridgeConfigPath}`);
-    console.log("下一步: 运行 codex-provider-bridge serve，然后重启 Codex。");
+    console.log("下一步: 运行 codex-provider-bridge start，然后重启 Codex。");
     return;
   }
 
@@ -145,7 +194,7 @@ main().catch((error) => {
 function formatError(error: unknown): string {
   const code = typeof error === "object" && error ? (error as NodeJS.ErrnoException).code : undefined;
   if (code === "EADDRINUSE") {
-    return "启动失败: 本地端口已被占用。请关闭占用该端口的程序，或运行 codex-provider-bridge setup 换一个端口。";
+    return "启动失败: 本地端口已被占用。请运行 codex-provider-bridge status 查看后台状态，或运行 codex-provider-bridge setup 换一个端口。";
   }
   if (code === "ENOENT") {
     return `找不到需要的文件: ${error instanceof Error ? error.message : String(error)}

@@ -1,9 +1,9 @@
 import fs from "node:fs/promises";
-import net from "node:net";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { loadBridgeConfig, publicBridgeConfig, resolveApiKey } from "./config.js";
-import { getBridgeConfigPath, getCodexConfigPath } from "./paths.js";
+import { canConnect, daemonStatus } from "./daemon.js";
+import { getBridgeConfigPath, getBridgeHome, getCodexConfigPath } from "./paths.js";
 import { hasBridgeProvider, topLevelModelProvider } from "./toml-patch.js";
 import type { DoctorResult } from "./types.js";
 
@@ -16,22 +16,6 @@ async function fileExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-async function canConnect(host: string, port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.createConnection({ host, port });
-    socket.setTimeout(800);
-    socket.once("connect", () => {
-      socket.destroy();
-      resolve(true);
-    });
-    socket.once("timeout", () => {
-      socket.destroy();
-      resolve(false);
-    });
-    socket.once("error", () => resolve(false));
-  });
 }
 
 async function readLoginStatus(): Promise<string | undefined> {
@@ -54,6 +38,7 @@ async function readLoginStatus(): Promise<string | undefined> {
 }
 
 export async function doctor(): Promise<DoctorResult> {
+  const bridgeHome = getBridgeHome();
   const bridgeConfigPath = getBridgeConfigPath();
   const codexConfigPath = getCodexConfigPath();
   const config = await loadBridgeConfig(bridgeConfigPath);
@@ -68,6 +53,7 @@ export async function doctor(): Promise<DoctorResult> {
     apiKeyPresent: Boolean(key.apiKey),
     apiKeySource: key.source,
     portOpen: await canConnect(config.host, config.port),
+    daemon: await daemonStatus(bridgeHome),
     codexConfigExists,
     bridgeProviderConfigured: hasBridgeProvider(codexConfig, config.providerId),
     modelProviderIsBridge: topLevelModelProvider(codexConfig) === config.providerId,
@@ -98,15 +84,23 @@ export function formatDoctorReport(result: DoctorResult): string {
     `${mark(result.modelProviderIsBridge)} 当前模型 provider: ${
       result.modelProviderIsBridge ? result.config.providerId : "Codex 尚未切到桥接 provider"
     }`,
+    `${mark(result.daemon.running)} 后台进程: ${
+      result.daemon.running
+        ? `正在运行，PID ${result.daemon.pid}`
+        : result.daemon.stale
+          ? `状态文件已失效，可运行 codex-provider-bridge start 重新启动`
+          : "未运行，请运行 codex-provider-bridge start"
+    }`,
     `${mark(result.portOpen)} 本地服务: ${
       result.portOpen
         ? `正在监听 http://${result.config.host}:${result.config.port}/v1`
-        : `未监听，请运行 codex-provider-bridge serve`
+        : `未监听，请运行 codex-provider-bridge start`
     }`,
+    `${mark(true)} 日志文件: ${result.daemon.logPath}`,
     `${mark(Boolean(result.loginStatus))} Codex 登录: ${result.loginStatus || "未检测到，请先在 Codex 中登录 ChatGPT"}`,
     "",
-    result.apiKeyPresent && result.bridgeProviderConfigured && result.modelProviderIsBridge
-      ? "下一步: 保持 codex-provider-bridge serve 运行，然后重启 Codex。"
+    result.apiKeyPresent && result.bridgeProviderConfigured && result.modelProviderIsBridge && result.daemon.running && result.portOpen
+      ? "下一步: 重启 Codex。如果需要调试日志，运行 codex-provider-bridge status 查看日志位置。"
       : "下一步: 运行 codex-provider-bridge setup，根据提示完成配置。"
   ];
 

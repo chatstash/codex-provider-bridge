@@ -30,6 +30,14 @@ export function getBridgeConfigPath(options: PathOptions = {}): string {
   return path.join(getBridgeHome(options), "config.json");
 }
 
+export function getDaemonStatePath(bridgeHome: string): string {
+  return path.join(bridgeHome, "bridge.pid.json");
+}
+
+export function getDaemonLogPath(bridgeHome: string): string {
+  return path.join(bridgeHome, "bridge.log");
+}
+
 export function getInstallStatePath(bridgeHome: string): string {
   return path.join(bridgeHome, "install-state.json");
 }

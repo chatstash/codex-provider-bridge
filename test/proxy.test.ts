@@ -50,7 +50,7 @@ test("proxy replaces authorization and forwards JSON response", async () => {
       ...defaultConfig(),
       upstreamBaseUrl: `http://127.0.0.1:${upstreamPort}/v1`
     },
-    env: { SUB2API_API_KEY: "sub2api-test-key" },
+    env: { OPENAI_COMPAT_API_KEY: "compat-test-key" },
     logger: { log() {}, error() {} }
   });
   const proxyPort = await listen(proxy);
@@ -66,7 +66,7 @@ test("proxy replaces authorization and forwards JSON response", async () => {
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true });
-  assert.equal(seenAuth, "Bearer sub2api-test-key");
+  assert.equal(seenAuth, "Bearer compat-test-key");
   assert.equal(seenPath, "/v1/responses");
 
   await close(proxy);
@@ -86,7 +86,7 @@ test("proxy streams SSE chunks without buffering entire response", async () => {
       ...defaultConfig(),
       upstreamBaseUrl: `http://127.0.0.1:${upstreamPort}/v1`
     },
-    env: { SUB2API_API_KEY: "sub2api-test-key" },
+    env: { OPENAI_COMPAT_API_KEY: "compat-test-key" },
     logger: { log() {}, error() {} }
   });
   const proxyPort = await listen(proxy);
@@ -107,7 +107,7 @@ test("proxy streams SSE chunks without buffering entire response", async () => {
 
 test("proxy reports missing API key", async () => {
   const proxy = createProxyServer({
-    config: defaultConfig(),
+    config: { ...defaultConfig(), upstreamBaseUrl: "https://example.com/v1" },
     env: {},
     logger: { log() {}, error() {} }
   });
@@ -153,7 +153,7 @@ test("proxy uses API key saved in config when env is absent", async () => {
 test("proxy rejects non-v1 paths", async () => {
   const proxy = createProxyServer({
     config: defaultConfig(),
-    env: { SUB2API_API_KEY: "sub2api-test-key" },
+    env: { OPENAI_COMPAT_API_KEY: "compat-test-key" },
     logger: { log() {}, error() {} }
   });
   const proxyPort = await listen(proxy);

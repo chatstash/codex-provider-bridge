@@ -1,5 +1,5 @@
 import { createInterface } from "node:readline/promises";
-import { loadBridgeConfig, mergeConfig } from "./config.js";
+import { assertConfigured, loadBridgeConfig, mergeConfig } from "./config.js";
 import { installBridge } from "./install.js";
 import { getBridgeConfigPath, getBridgeHome } from "./paths.js";
 import type { BridgeConfig, InstallResult } from "./types.js";
@@ -33,10 +33,13 @@ function readPort(value: string, fallback: number): number {
   return port;
 }
 
-function readUrl(value: string, fallback: string): string {
+function readUrl(value: string, fallback?: string): string {
   const trimmed = cleanInput(value);
   if (!trimmed) {
-    return fallback;
+    if (fallback) {
+      return fallback;
+    }
+    throw new Error("需要上游地址。请填写你的 OpenAI 兼容 /v1 地址，例如 https://api.example.com/v1。");
   }
 
   const parsed = new URL(trimmed);
@@ -83,12 +86,10 @@ export async function setupBridge(options: SetupOptions = {}): Promise<SetupResu
 
   try {
     output.write("\ncodex-provider-bridge 安装向导\n");
-    output.write("按回车使用默认值。API Key 会保存到本机配置文件，不会打印到日志。\n\n");
+    output.write("已有配置会显示为默认值。API Key 会保存到本机配置文件，不会打印到日志。\n\n");
 
-    const upstreamBaseUrl = readUrl(
-      await askQuestion(`上游 OpenAI 兼容地址 [${saved.upstreamBaseUrl}]: `),
-      saved.upstreamBaseUrl
-    );
+    const upstreamHint = saved.upstreamBaseUrl ? ` [${saved.upstreamBaseUrl}]` : "";
+    const upstreamBaseUrl = readUrl(await askQuestion(`上游 OpenAI 兼容地址${upstreamHint}: `), saved.upstreamBaseUrl);
     const port = readPort(await askQuestion(`本地端口 [${saved.port}]: `), saved.port);
     const apiKeyEnv = await askQuestion(`环境变量名 [${saved.apiKeyEnv}]: `) || saved.apiKeyEnv;
     const existingKeyHint = saved.apiKey ? "，留空则沿用已保存密钥" : "";
@@ -105,6 +106,7 @@ export async function setupBridge(options: SetupOptions = {}): Promise<SetupResu
       apiKeyEnv,
       apiKey
     });
+    assertConfigured(config);
 
     const result = await installBridge({
       bridgeHome,

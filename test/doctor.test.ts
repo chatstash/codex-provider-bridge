@@ -12,7 +12,7 @@ test("doctor and formatted report redact saved API key", async () => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "codex-provider-bridge-doctor-"));
   const bridgeHome = path.join(temp, "bridge-home");
   const codexHome = path.join(temp, "codex-home");
-  const config = { ...defaultConfig(), apiKey: "doctor-secret-key" };
+  const config = { ...defaultConfig(), upstreamBaseUrl: "https://example.com/v1", apiKey: "doctor-secret-key" };
 
   await saveBridgeConfig(config, path.join(bridgeHome, "config.json"));
   await fs.mkdir(codexHome, { recursive: true });
@@ -20,10 +20,10 @@ test("doctor and formatted report redact saved API key", async () => {
 
   const previousBridgeHome = process.env.CODEX_PROVIDER_BRIDGE_HOME;
   const previousCodexHome = process.env.CODEX_HOME;
-  const previousApiKey = process.env.SUB2API_API_KEY;
+  const previousApiKey = process.env.OPENAI_COMPAT_API_KEY;
   process.env.CODEX_PROVIDER_BRIDGE_HOME = bridgeHome;
   process.env.CODEX_HOME = codexHome;
-  delete process.env.SUB2API_API_KEY;
+  delete process.env.OPENAI_COMPAT_API_KEY;
 
   try {
     const result = await doctor();
@@ -33,9 +33,11 @@ test("doctor and formatted report redact saved API key", async () => {
     assert.equal(result.apiKeyPresent, true);
     assert.equal(result.apiKeySource, "config");
     assert.equal(result.config.apiKeySaved, true);
+    assert.equal(result.daemon.running, false);
     assert.equal(json.includes("doctor-secret-key"), false);
     assert.equal(report.includes("doctor-secret-key"), false);
     assert.match(report, /已保存到本机配置/);
+    assert.match(report, /后台进程/);
   } finally {
     if (previousBridgeHome === undefined) {
       delete process.env.CODEX_PROVIDER_BRIDGE_HOME;
@@ -48,9 +50,9 @@ test("doctor and formatted report redact saved API key", async () => {
       process.env.CODEX_HOME = previousCodexHome;
     }
     if (previousApiKey === undefined) {
-      delete process.env.SUB2API_API_KEY;
+      delete process.env.OPENAI_COMPAT_API_KEY;
     } else {
-      process.env.SUB2API_API_KEY = previousApiKey;
+      process.env.OPENAI_COMPAT_API_KEY = previousApiKey;
     }
   }
 });

@@ -21,6 +21,22 @@ export function mergeConfig(raw: Partial<BridgeConfig> = {}): BridgeConfig {
   return config;
 }
 
+export function assertConfigured(config: Pick<BridgeConfig, "upstreamBaseUrl">): void {
+  if (!config.upstreamBaseUrl.trim()) {
+    throw new Error("缺少上游地址。请运行 codex-provider-bridge setup，并填写你的 OpenAI 兼容 /v1 地址。");
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(config.upstreamBaseUrl);
+  } catch {
+    throw new Error("上游地址格式不正确。请重新运行 codex-provider-bridge setup，并填写完整的 http:// 或 https:// 地址。");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("上游地址必须以 http:// 或 https:// 开头。请重新运行 codex-provider-bridge setup。");
+  }
+}
+
 export async function loadBridgeConfig(configPath = getBridgeConfigPath()): Promise<BridgeConfig> {
   try {
     const raw = await fs.readFile(configPath, "utf8");

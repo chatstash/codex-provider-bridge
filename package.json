@@ -8,8 +8,7 @@
   },
   "files": [
     "dist/src",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -17,8 +16,10 @@
     "prepare": "npm run build",
     "setup": "node dist/src/cli.js setup",
     "serve": "node dist/src/cli.js serve",
+    "stop": "node dist/src/cli.js stop",
+    "status": "node dist/src/cli.js status",
     "doctor": "node dist/src/cli.js doctor",
-    "start": "node dist/src/cli.js serve"
+    "start": "node dist/src/cli.js start"
   },
   "repository": {
     "type": "git",
@@ -34,7 +35,6 @@
     "proxy",
     "provider"
   ],
-  "license": "MIT",
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0"

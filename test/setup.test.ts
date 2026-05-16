@@ -20,7 +20,7 @@ function quietOutput(): Writable {
   });
 }
 
-test("setup accepts defaults, saves API key, patches config, and creates backup", async () => {
+test("setup saves API key, patches config, and creates backup", async () => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "codex-provider-bridge-setup-"));
   const bridgeHome = path.join(temp, "bridge-home");
   const codexConfigPath = path.join(temp, ".codex", "config.toml");
@@ -32,16 +32,31 @@ test("setup accepts defaults, saves API key, patches config, and creates backup"
   const result = await setupBridge({
     bridgeHome,
     codexConfigPath,
-    prompt: promptFrom(["", "", "", "setup-secret-key"]),
+    prompt: promptFrom(["https://example.com/v1", "", "", "setup-secret-key"]),
     output: quietOutput()
   });
   const saved = await loadBridgeConfig(result.bridgeConfigPath);
   const patched = await fs.readFile(codexConfigPath, "utf8");
 
   assert.equal(saved.apiKey, "setup-secret-key");
+  assert.equal(saved.upstreamBaseUrl, "https://example.com/v1");
   assert.equal(saved.port, 11435);
   assert.match(patched, /model_provider = "codex_provider_bridge"/);
   assert.equal(await fs.readFile(result.backupPath, "utf8"), original);
+});
+
+test("setup requires upstream on first run", async () => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "codex-provider-bridge-setup-required-"));
+
+  await assert.rejects(
+    setupBridge({
+      bridgeHome: path.join(temp, "bridge-home"),
+      codexConfigPath: path.join(temp, ".codex", "config.toml"),
+      prompt: promptFrom(["", "", "", "setup-secret-key"]),
+      output: quietOutput()
+    }),
+    /需要上游地址/
+  );
 });
 
 test("setup accepts custom upstream and port", async () => {

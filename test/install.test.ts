@@ -23,7 +23,7 @@ name = "OpenAI"
   const install = await installBridge({
     bridgeHome,
     codexConfigPath,
-    config: defaultConfig()
+    config: { ...defaultConfig(), upstreamBaseUrl: "https://example.com/v1" }
   });
   const patched = await fs.readFile(codexConfigPath, "utf8");
 

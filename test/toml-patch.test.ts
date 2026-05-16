@@ -9,7 +9,7 @@ model_provider = "OpenAI"
 
 [model_providers.OpenAI]
 name = "OpenAI"
-base_url = "https://sub2api.fcyaxing.com/v1"
+base_url = "https://example.com/v1"
 wire_api = "responses"
 requires_openai_auth = false
 `;

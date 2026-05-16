@@ -1,6 +1,6 @@
 import http from "node:http";
 import { Readable } from "node:stream";
-import { loadBridgeConfig, resolveApiKey } from "./config.js";
+import { assertConfigured, loadBridgeConfig, resolveApiKey } from "./config.js";
 import type { BridgeConfig } from "./types.js";
 
 export interface ProxyOptions {
@@ -131,6 +131,7 @@ export function createProxyServer(options: ProxyOptions = {}): http.Server {
 
 export async function serve(config?: BridgeConfig): Promise<http.Server> {
   config ??= await loadBridgeConfig();
+  assertConfigured(config);
   const key = resolveApiKey(config);
   if (!key.apiKey) {
     throw new Error(`Missing API key. Run "codex-provider-bridge setup" or set ${config.apiKeyEnv}.`);

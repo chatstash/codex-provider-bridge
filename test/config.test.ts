@@ -18,10 +18,17 @@ test("saves and loads API key from local bridge config", async () => {
 
 test("environment API key overrides saved config key", () => {
   const config = { ...defaultConfig(), apiKey: "saved-test-key" };
-  const resolved = resolveApiKey(config, { SUB2API_API_KEY: "env-test-key" });
+  const resolved = resolveApiKey(config, { OPENAI_COMPAT_API_KEY: "env-test-key" });
 
   assert.equal(resolved.apiKey, "env-test-key");
   assert.equal(resolved.source, "environment");
+});
+
+test("default config uses neutral API key env and no personal upstream", () => {
+  const config = defaultConfig();
+
+  assert.equal(config.apiKeyEnv, "OPENAI_COMPAT_API_KEY");
+  assert.equal(config.upstreamBaseUrl, "");
 });
 
 test("public config redacts API key", () => {

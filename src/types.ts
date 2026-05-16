@@ -48,8 +48,41 @@ export interface DoctorResult {
   apiKeyPresent: boolean;
   apiKeySource: ApiKeySource | null;
   portOpen: boolean;
+  daemon: DaemonStatus;
   codexConfigExists: boolean;
   bridgeProviderConfigured: boolean;
   modelProviderIsBridge: boolean;
   loginStatus?: string;
+}
+
+export interface DaemonState {
+  pid: number;
+  startedAt: string;
+  command: string;
+  logPath: string;
+  host: string;
+  port: number;
+}
+
+export interface DaemonStatus {
+  statePath: string;
+  logPath: string;
+  running: boolean;
+  pid?: number;
+  stale: boolean;
+}
+
+export interface StartDaemonResult {
+  alreadyRunning: boolean;
+  pid?: number;
+  statePath: string;
+  logPath: string;
+  url: string;
+}
+
+export interface StopDaemonResult {
+  stopped: boolean;
+  wasRunning: boolean;
+  pid?: number;
+  statePath: string;
 }
