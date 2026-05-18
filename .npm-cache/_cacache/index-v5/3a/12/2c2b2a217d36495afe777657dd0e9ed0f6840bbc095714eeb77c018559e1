@@ -1,0 +1,2 @@
+
+b92d7890a5b9410ce7a6447b8d59917d78dda7f5	{"key":"make-fetch-happen:request-cache:http://maven.xpaas.lenovo.com/nexus/repository/npm/@types/node/-/node-24.12.4.tgz","integrity":null,"time":1779071684074,"size":"185","metadata":{"time":1779071684074,"url":"http://maven.xpaas.lenovo.com/nexus/repository/npm/@types/node/-/node-24.12.4.tgz","reqHeaders":{},"resHeaders":{"content-type":"text/html","date":"Mon, 18 May 2026 02:34:40 GMT","location":"https://maven.xpaas.lenovo.com/nexus/repository/npm/@types/node/-/node-24.12.4.tgz"},"options":{"compress":true},"status":301}}
