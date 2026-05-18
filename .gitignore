@@ -4,3 +4,6 @@ dist/
 target/
 *.log
 .DS_Store
+.ide
+.npm-cache
+target
