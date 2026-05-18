@@ -20,6 +20,7 @@ Codex App -> http://127.0.0.1:11435/v1 -> 你的 OpenAI 兼容 /v1 地址
 要求：Node.js 20+，以及你自己的上游服务地址和 API Key。
 
 ```powershell
+npm install -g typescript
 npm install -g github:chatstash/codex-provider-bridge
 codex-provider-bridge setup
 codex-provider-bridge start
