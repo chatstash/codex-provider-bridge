@@ -12,8 +12,6 @@ Codex App -> http://127.0.0.1:11435/v1 -> 你的 OpenAI 兼容 /v1 地址
 
 - Windows: `codex-provider-bridge-windows-x86_64.exe`
 - Linux: `codex-provider-bridge-linux-x86_64`
-- macOS Intel: `codex-provider-bridge-macos-x86_64`
-- macOS Apple Silicon: `codex-provider-bridge-macos-aarch64`
 
 Windows PowerShell 示例：
 
@@ -25,7 +23,7 @@ codex-provider-bridge setup
 codex-provider-bridge start
 ```
 
-Linux/macOS 示例：
+Linux 示例：
 
 ```bash
 chmod +x ./codex-provider-bridge-*
@@ -82,8 +80,6 @@ Linux 会创建并启用 systemd user service：
 codex-provider-bridge install-startup
 codex-provider-bridge startup-status
 ```
-
-macOS 当前不支持 `install-startup`，但二进制可以正常运行 `setup/start/serve/doctor`。
 
 移除自启：
 

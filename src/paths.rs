@@ -78,8 +78,10 @@ pub fn default_config() -> BridgeConfig {
 }
 
 fn get_env(env: Option<&EnvMap>, key: &str) -> Option<String> {
-    env.and_then(|env| env.get(key).cloned())
-        .or_else(|| std::env::var(key).ok())
+    match env {
+        Some(env) => env.get(key).cloned(),
+        None => std::env::var(key).ok(),
+    }
 }
 
 #[cfg(test)]
