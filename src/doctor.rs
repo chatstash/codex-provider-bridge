@@ -1,7 +1,11 @@
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
+use reqwest::Client;
 use tokio::fs;
+use tokio::time::timeout;
+use tokio_tungstenite::{connect_async, tungstenite};
 
 use crate::config::{load_bridge_config, public_bridge_config, resolve_api_key};
 use crate::daemon::{can_connect, daemon_status};
@@ -30,8 +34,11 @@ pub async fn doctor() -> Result<DoctorResult> {
     let provider_section = format!("model_providers.{}", config.provider_id);
     let bridge_provider_supports_websockets =
         section_boolean(&codex_config, &provider_section, "supports_websockets");
+    let port_open = can_connect(&config.host, config.port, 800).await;
+    let (websocket_probe_ok, websocket_probe_detail) =
+        probe_websocket_bridge(&config, port_open).await;
     let (upstream_probe_ok, upstream_probe_status, upstream_probe_detail) =
-        probe_upstream(&config, key.api_key.as_deref());
+        probe_upstream(&config, key.api_key.as_deref()).await;
 
     Ok(DoctorResult {
         bridge_config_path,
@@ -39,7 +46,7 @@ pub async fn doctor() -> Result<DoctorResult> {
         config: public_bridge_config(&config),
         api_key_present: key.api_key.is_some(),
         api_key_source: key.source,
-        port_open: can_connect(&config.host, config.port, 800).await,
+        port_open,
         daemon: daemon_status(Some(bridge_home.clone())).await?,
         startup: startup_status(Some(bridge_home)).await?,
         codex_config_exists,
@@ -47,7 +54,10 @@ pub async fn doctor() -> Result<DoctorResult> {
         model_provider_is_bridge: top_level_model_provider(&codex_config).as_deref()
             == Some(&config.provider_id),
         bridge_provider_supports_websockets,
-        bridge_provider_websocket_compatible: bridge_provider_supports_websockets == Some(false),
+        bridge_provider_websocket_compatible: bridge_provider_supports_websockets == Some(true)
+            && websocket_probe_ok.unwrap_or(true),
+        websocket_probe_ok,
+        websocket_probe_detail,
         upstream_probe_ok,
         upstream_probe_status,
         upstream_probe_detail,
@@ -105,11 +115,17 @@ pub fn format_doctor_report(result: &DoctorResult) -> String {
         ),
         format!(
             "{} WebSocket 配置: {}",
-            mark(result.bridge_provider_websocket_compatible),
-            match result.bridge_provider_supports_websockets {
-                Some(false) => "已显式禁用 websocket，避免误走 Upgrade 链路".to_string(),
-                Some(true) => "当前 provider 配置仍为 supports_websockets=true，但 bridge 不支持 websocket。运行 codex-provider-bridge install 修复。".to_string(),
-                None => "当前 provider 未显式写入 supports_websockets=false。运行 codex-provider-bridge install 修复。".to_string(),
+            mark(result.bridge_provider_supports_websockets == Some(true)),
+            match (
+                result.bridge_provider_supports_websockets,
+                result.websocket_probe_ok,
+            ) {
+                (Some(true), Some(false)) => {
+                    "provider 已显式启用 websocket，但运行时 Upgrade 探活失败。看下方 WebSocket 探活。".to_string()
+                }
+                (Some(true), _) => "已显式启用 websocket，Codex 可走 Upgrade 链路".to_string(),
+                (Some(false), _) => "当前 provider 配置仍为 supports_websockets=false，但 bridge 已支持 websocket。运行 codex-provider-bridge install 修复。".to_string(),
+                (None, _) => "当前 provider 未显式写入 supports_websockets=true。运行 codex-provider-bridge install 修复。".to_string(),
             }
         ),
         format!(
@@ -140,6 +156,14 @@ pub fn format_doctor_report(result: &DoctorResult) -> String {
             mark(result.upstream_probe_ok),
             result
                 .upstream_probe_detail
+                .clone()
+                .unwrap_or_else(|| "未执行".to_string())
+        ),
+        format!(
+            "{} WebSocket 探活: {}",
+            mark(result.websocket_probe_ok.unwrap_or(false)),
+            result
+                .websocket_probe_detail
                 .clone()
                 .unwrap_or_else(|| "未执行".to_string())
         ),
@@ -191,12 +215,15 @@ fn next_step(result: &DoctorResult) -> String {
     {
         return "下一步: 运行 codex-provider-bridge setup，根据提示完成配置。".to_string();
     }
-    if !result.bridge_provider_websocket_compatible {
+    if result.bridge_provider_supports_websockets != Some(true) {
         return "下一步: 运行 codex-provider-bridge install 修复 provider 配置，然后重启 Codex。"
             .to_string();
     }
     if !result.daemon.running || !result.port_open {
         return "下一步: 运行 codex-provider-bridge start 启动本地桥接服务。".to_string();
+    }
+    if result.websocket_probe_ok == Some(false) {
+        return "下一步: 检查 bridge 日志、上游 websocket 支持和 API Key 鉴权。".to_string();
     }
     if !result.upstream_probe_ok {
         return "下一步: 检查上游服务可用性、网关超时和 API Key 权限。".to_string();
@@ -233,7 +260,7 @@ fn read_login_status() -> Option<String> {
     None
 }
 
-fn probe_upstream(
+async fn probe_upstream(
     config: &BridgeConfig,
     api_key: Option<&str>,
 ) -> (bool, Option<u16>, Option<String>) {
@@ -253,44 +280,67 @@ fn probe_upstream(
             return (false, None, Some(format!("构造上游探活地址失败: {error}")));
         }
     };
-    let output_target = if cfg!(windows) { "NUL" } else { "/dev/null" };
-    let output = Command::new("curl")
-        .args([
-            "-sS",
-            "-o",
-            output_target,
-            "--max-time",
-            "10",
-            "--connect-timeout",
-            "5",
-            "-w",
-            "%{http_code}",
-            "-H",
-            &format!("Authorization: Bearer {api_key}"),
-            &target,
-        ])
-        .output();
+    let client = match Client::builder()
+        .http1_only()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => return (false, None, Some(format!("创建探活客户端失败: {error}"))),
+    };
 
-    match output {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let status = stdout.parse::<u16>().ok().filter(|status| *status > 0);
-            let ok = matches!(status, Some(200));
-            let detail = if let Some(status) = status {
-                if stderr.is_empty() {
-                    format!("GET /models -> {status}")
-                } else {
-                    format!("GET /models -> {status} ({stderr})")
-                }
-            } else if stderr.is_empty() {
-                "GET /models 失败，未返回状态码".to_string()
-            } else {
-                format!("GET /models 失败: {stderr}")
-            };
-            (ok, status, Some(detail))
+    match client.get(&target).bearer_auth(api_key).send().await {
+        Ok(response) => {
+            let status = response.status().as_u16();
+            (
+                status == 200,
+                Some(status),
+                Some(format!("GET /models -> {status}")),
+            )
         }
-        Err(error) => (false, None, Some(format!("调用 curl 探活失败: {error}"))),
+        Err(error) => (false, None, Some(format!("GET /models 失败: {error}"))),
+    }
+}
+
+async fn probe_websocket_bridge(
+    config: &BridgeConfig,
+    port_open: bool,
+) -> (Option<bool>, Option<String>) {
+    if !port_open {
+        return (None, Some("跳过：本地服务未监听。".to_string()));
+    }
+
+    let host = if config.host.contains(':') && !config.host.starts_with('[') {
+        format!("[{}]", config.host)
+    } else {
+        config.host.clone()
+    };
+    let target = format!(
+        "ws://{host}:{}/v1/responses?client_version=doctor",
+        config.port
+    );
+
+    match timeout(Duration::from_secs(10), connect_async(&target)).await {
+        Ok(Ok((socket, _))) => {
+            drop(socket);
+            (
+                Some(true),
+                Some("GET /responses Upgrade -> 101".to_string()),
+            )
+        }
+        Ok(Err(tungstenite::Error::Http(response))) => {
+            let status = response.status().as_u16();
+            (
+                Some(false),
+                Some(format!("GET /responses Upgrade -> {status}")),
+            )
+        }
+        Ok(Err(error)) => (
+            Some(false),
+            Some(format!("GET /responses Upgrade 失败: {error}")),
+        ),
+        Err(_) => (Some(false), Some("GET /responses Upgrade 超时".to_string())),
     }
 }
 
@@ -300,7 +350,9 @@ async fn path_exists(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::format_doctor_report;
     use crate::paths::default_config;
+    use crate::types::{DaemonStatus, DoctorResult, PublicBridgeConfig, StartupStatus};
 
     #[test]
     fn doctor_json_redacts_key() {
@@ -310,5 +362,58 @@ mod tests {
         let json = serde_json::to_string(&public).unwrap();
         assert!(!json.contains("secret"));
         assert!(json.contains("apiKeySaved"));
+    }
+
+    #[test]
+    fn websocket_health_is_true_when_provider_supports_it() {
+        let config = default_config();
+        let result = DoctorResult {
+            bridge_config_path: "bridge.json".into(),
+            codex_config_path: "config.toml".into(),
+            config: PublicBridgeConfig {
+                host: config.host,
+                port: config.port,
+                upstream_base_url: "https://api.example.com/v1".to_string(),
+                api_key_env: config.api_key_env,
+                provider_id: config.provider_id,
+                provider_name: config.provider_name,
+                api_key_saved: true,
+            },
+            api_key_present: true,
+            api_key_source: Some("config".to_string()),
+            port_open: true,
+            daemon: DaemonStatus {
+                state_path: "bridge.pid.json".into(),
+                log_path: "bridge.log".into(),
+                running: true,
+                pid: Some(1),
+                stale: false,
+            },
+            startup: StartupStatus {
+                supported: true,
+                installed: false,
+                method: None,
+                task_name: None,
+                script_path: None,
+                service_name: None,
+                service_path: None,
+                detail: None,
+            },
+            codex_config_exists: true,
+            bridge_provider_configured: true,
+            model_provider_is_bridge: true,
+            bridge_provider_supports_websockets: Some(true),
+            bridge_provider_websocket_compatible: true,
+            websocket_probe_ok: Some(true),
+            websocket_probe_detail: Some("GET /responses Upgrade -> 101".to_string()),
+            upstream_probe_ok: true,
+            upstream_probe_status: Some(200),
+            upstream_probe_detail: Some("GET /models -> 200".to_string()),
+            login_status: Some("Logged in".to_string()),
+        };
+        let report = format_doctor_report(&result);
+        assert!(report.contains("已显式启用 websocket"));
+        assert!(report.contains("[OK] WebSocket 配置"));
+        assert!(report.contains("[OK] WebSocket 探活"));
     }
 }

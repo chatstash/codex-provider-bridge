@@ -132,7 +132,7 @@ pub fn patch_codex_config(content: &str, config: &BridgeConfig) -> String {
             ),
             "wire_api = \"responses\"".to_string(),
             "requires_openai_auth = true".to_string(),
-            "supports_websockets = false".to_string(),
+            "supports_websockets = true".to_string(),
         ],
     )
 }
@@ -198,7 +198,7 @@ mod tests {
         assert!(patched.contains("remote_control = true"));
         assert!(patched.contains("[model_providers.codex_provider_bridge]"));
         assert!(patched.contains("requires_openai_auth = true"));
-        assert!(patched.contains("supports_websockets = false"));
+        assert!(patched.contains("supports_websockets = true"));
         assert!(patched.contains("[model_providers.openai]"));
     }
 
@@ -214,7 +214,7 @@ mod tests {
     fn reads_section_boolean() {
         let content = r#"
 [model_providers.codex_provider_bridge]
-supports_websockets = false
+supports_websockets = true
 "#;
         assert_eq!(
             section_boolean(
@@ -222,7 +222,7 @@ supports_websockets = false
                 "model_providers.codex_provider_bridge",
                 "supports_websockets"
             ),
-            Some(false)
+            Some(true)
         );
     }
 }

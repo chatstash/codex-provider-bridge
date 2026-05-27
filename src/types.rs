@@ -102,6 +102,10 @@ pub struct DoctorResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bridge_provider_supports_websockets: Option<bool>,
     pub bridge_provider_websocket_compatible: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub websocket_probe_ok: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub websocket_probe_detail: Option<String>,
     pub upstream_probe_ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upstream_probe_status: Option<u16>,

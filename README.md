@@ -104,8 +104,9 @@ codex-provider-bridge uninstall-startup
 
 ## 当前限制
 
-- 当前 bridge 只支持 HTTP `responses` 转发，不支持 websocket 透传
-- 安装时会把 Codex provider 写成 `supports_websockets = false`，避免误走 Upgrade 链路
+- 当前 bridge 同时支持普通 HTTP `responses` 转发和 WebSocket Upgrade 透传
+- 安装时会把 Codex provider 写成 `supports_websockets = true`
+- WebSocket 握手失败时会直接透传上游错误，不会偷偷降级成普通 HTTP
 - 如果日志里频繁出现 `504` 且耗时接近 `300s`，通常是上游网关超时，不是本地端口问题
 
 ## 开发
