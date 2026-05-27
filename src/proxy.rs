@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::convert::Infallible;
+use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -19,9 +20,11 @@ use hyper::{Method, Request, Response, StatusCode, Uri};
 use hyper_util::rt::TokioIo;
 use reqwest::Client;
 use sha1::{Digest, Sha1};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::connect_async_with_config;
+use tokio_tungstenite::tungstenite::error::ProtocolError;
+use tokio_tungstenite::tungstenite::protocol::{Message, Role, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest};
 use tokio_tungstenite::WebSocketStream;
 
@@ -30,8 +33,12 @@ use crate::error::{err, Result};
 use crate::types::BridgeConfig;
 
 type ResponseBody = BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
+type DownstreamWebSocket = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
+type UpstreamWebSocket = WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
 
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const MAX_WEBSOCKET_MESSAGE_SIZE: usize = 256 << 20;
+const MAX_WEBSOCKET_FRAME_SIZE: usize = 64 << 20;
 
 #[derive(Clone)]
 struct AppState {
@@ -262,7 +269,8 @@ async fn handle_websocket_upgrade(
     let protocol = request.headers().get(SEC_WEBSOCKET_PROTOCOL).cloned();
     let upstream_url = to_upstream_ws_url(path, &state.config.upstream_base_url)?;
     let upstream_request = build_upstream_ws_request(&upstream_url, request.headers(), &api_key)?;
-    let upstream = connect_async(upstream_request).await;
+    let upstream =
+        connect_async_with_config(upstream_request, Some(websocket_config()), false).await;
     let (upstream_ws, upstream_response) = match upstream {
         Ok(result) => result,
         Err(tungstenite::Error::Http(response)) => return Ok(map_ws_error_response(response)),
@@ -303,8 +311,12 @@ async fn handle_websocket_upgrade(
                 return;
             }
         };
-        let downstream =
-            WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
+        let downstream = WebSocketStream::from_raw_socket(
+            TokioIo::new(upgraded),
+            Role::Server,
+            Some(websocket_config()),
+        )
+        .await;
         if let Some(expected) = protocol.as_ref().and_then(|value| value.to_str().ok()) {
             if selected_protocol
                 .as_ref()
@@ -323,58 +335,140 @@ async fn handle_websocket_upgrade(
 }
 
 async fn bridge_websocket_streams(
-    downstream: WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>,
-    upstream: WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
+    mut downstream: DownstreamWebSocket,
+    mut upstream: UpstreamWebSocket,
 ) -> Result<()> {
-    let (mut downstream_sink, mut downstream_stream) = downstream.split();
-    let (mut upstream_sink, mut upstream_stream) = upstream.split();
+    let mut downstream_done = false;
+    let mut upstream_done = false;
+    let mut downstream_received_close = false;
+    let mut upstream_received_close = false;
 
-    let downstream_to_upstream = async {
-        while let Some(message) = downstream_stream.next().await {
-            let message = message
-                .map_err(|error| err(format!("downstream websocket read failed: {error}")))?;
-            if message.is_close() {
-                upstream_sink
-                    .send(message)
-                    .await
-                    .map_err(|error| err(format!("upstream websocket close failed: {error}")))?;
-                break;
+    while !downstream_done || !upstream_done {
+        tokio::select! {
+            message = downstream.next(), if !downstream_done => {
+                let close_started = downstream_received_close || upstream_received_close;
+                let Some(message) = next_websocket_message(message, "downstream", close_started)? else {
+                    downstream_done = true;
+                    continue;
+                };
+                let is_close = message.is_close();
+                if is_close {
+                    downstream_received_close = true;
+                }
+                flush_websocket_replies(&mut downstream, &message, "downstream", close_started).await?;
+                if !upstream_done && !upstream_received_close {
+                    send_websocket_message(
+                        &mut upstream,
+                        message,
+                        "upstream",
+                        upstream_received_close || is_close,
+                    ).await?;
+                }
             }
-            upstream_sink
-                .send(message)
-                .await
-                .map_err(|error| err(format!("upstream websocket send failed: {error}")))?;
-        }
-        upstream_sink
-            .close()
-            .await
-            .map_err(|error| err(format!("upstream websocket final close failed: {error}")))
-    };
-
-    let upstream_to_downstream = async {
-        while let Some(message) = upstream_stream.next().await {
-            let message =
-                message.map_err(|error| err(format!("upstream websocket read failed: {error}")))?;
-            if message.is_close() {
-                downstream_sink
-                    .send(message)
-                    .await
-                    .map_err(|error| err(format!("downstream websocket close failed: {error}")))?;
-                break;
+            message = upstream.next(), if !upstream_done => {
+                let close_started = upstream_received_close || downstream_received_close;
+                let Some(message) = next_websocket_message(message, "upstream", close_started)? else {
+                    upstream_done = true;
+                    continue;
+                };
+                let is_close = message.is_close();
+                if is_close {
+                    upstream_received_close = true;
+                }
+                flush_websocket_replies(&mut upstream, &message, "upstream", close_started).await?;
+                if !downstream_done && !downstream_received_close {
+                    send_websocket_message(
+                        &mut downstream,
+                        message,
+                        "downstream",
+                        downstream_received_close || is_close,
+                    ).await?;
+                }
             }
-            downstream_sink
-                .send(message)
-                .await
-                .map_err(|error| err(format!("downstream websocket send failed: {error}")))?;
         }
-        downstream_sink
-            .close()
-            .await
-            .map_err(|error| err(format!("downstream websocket final close failed: {error}")))
-    };
+    }
 
-    tokio::try_join!(downstream_to_upstream, upstream_to_downstream)?;
     Ok(())
+}
+
+fn websocket_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(MAX_WEBSOCKET_MESSAGE_SIZE))
+        .max_frame_size(Some(MAX_WEBSOCKET_FRAME_SIZE))
+}
+
+fn next_websocket_message(
+    message: Option<std::result::Result<Message, tungstenite::Error>>,
+    label: &str,
+    close_started: bool,
+) -> Result<Option<Message>> {
+    match message {
+        Some(Ok(message)) => Ok(Some(message)),
+        Some(Err(error)) if is_expected_websocket_shutdown(&error, close_started) => Ok(None),
+        Some(Err(error)) => Err(err(format!("{label} websocket read failed: {error}"))),
+        None => Ok(None),
+    }
+}
+
+async fn flush_websocket_replies<S>(
+    socket: &mut WebSocketStream<S>,
+    message: &Message,
+    label: &str,
+    close_started: bool,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    if !message.is_ping() && !message.is_close() {
+        return Ok(());
+    }
+
+    // tungstenite reads queue automatic pong/close replies; flush them immediately so
+    // long-running upstream work does not starve downstream heartbeats.
+    match socket.flush().await {
+        Ok(()) => Ok(()),
+        Err(error)
+            if is_expected_websocket_shutdown(&error, close_started || message.is_close()) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(err(format!("{label} websocket flush failed: {error}"))),
+    }
+}
+
+async fn send_websocket_message<S>(
+    socket: &mut WebSocketStream<S>,
+    message: Message,
+    label: &str,
+    close_started: bool,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    match socket.send(message).await {
+        Ok(()) => Ok(()),
+        Err(error) if is_expected_websocket_shutdown(&error, close_started) => Ok(()),
+        Err(error) => Err(err(format!("{label} websocket send failed: {error}"))),
+    }
+}
+
+fn is_expected_websocket_shutdown(error: &tungstenite::Error, close_started: bool) -> bool {
+    match error {
+        tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => true,
+        tungstenite::Error::Protocol(
+            ProtocolError::SendAfterClosing
+            | ProtocolError::ReceivedAfterClosing
+            | ProtocolError::ResetWithoutClosingHandshake,
+        ) => close_started,
+        tungstenite::Error::Io(io_error) if close_started => matches!(
+            io_error.kind(),
+            ErrorKind::BrokenPipe
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::ConnectionReset
+                | ErrorKind::UnexpectedEof
+        ),
+        _ => false,
+    }
 }
 
 fn build_upstream_ws_request(
@@ -599,6 +693,8 @@ mod tests {
     use reqwest::Client;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    use tokio::time::{timeout, Duration};
+    use tokio_tungstenite::connect_async;
 
     #[test]
     fn maps_v1_paths_to_upstream() {
@@ -856,5 +952,65 @@ mod tests {
         let response = client.next().await.unwrap().unwrap();
         assert_eq!(response.into_text().unwrap(), "hello");
         client.close(None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn websocket_bridge_flushes_downstream_ping_replies() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = upstream.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let _ = ws.close(None).await;
+        });
+
+        let config = BridgeConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            upstream_base_url: format!("http://{upstream_addr}/v1"),
+            api_key: Some("secret".to_string()),
+            ..default_config()
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bridge_addr = listener.local_addr().unwrap();
+        let state = Arc::new(AppState {
+            config,
+            client: Client::builder().http1_only().build().unwrap(),
+        });
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = TokioIo::new(stream);
+            let service_state = state.clone();
+            let service = service_fn(move |request| {
+                let service_state = service_state.clone();
+                async move { handle_request(request, service_state).await }
+            });
+            http1::Builder::new()
+                .serve_connection(io, service)
+                .with_upgrades()
+                .await
+                .unwrap();
+        });
+
+        let (mut client, _) = connect_async(format!("ws://{bridge_addr}/v1/responses"))
+            .await
+            .unwrap();
+        client
+            .send(Message::Ping(Bytes::from_static(b"hb")))
+            .await
+            .unwrap();
+        let response = timeout(Duration::from_secs(1), async {
+            loop {
+                let message = client.next().await.unwrap().unwrap();
+                if message.is_pong() {
+                    break message;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(response.into_data(), Bytes::from_static(b"hb"));
+        let _ = client.close(None).await;
     }
 }
