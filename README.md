@@ -102,6 +102,12 @@ codex-provider-bridge uninstall-startup
 - 不记录请求体，不记录 token
 - 保存的 API Key 位于本机配置文件中，程序会尽量把权限设置为仅当前用户可读写
 
+## 当前限制
+
+- 当前 bridge 只支持 HTTP `responses` 转发，不支持 websocket 透传
+- 安装时会把 Codex provider 写成 `supports_websockets = false`，避免误走 Upgrade 链路
+- 如果日志里频繁出现 `504` 且耗时接近 `300s`，通常是上游网关超时，不是本地端口问题
+
 ## 开发
 
 ```powershell

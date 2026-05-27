@@ -100,6 +100,14 @@ pub struct DoctorResult {
     pub bridge_provider_configured: bool,
     pub model_provider_is_bridge: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub bridge_provider_supports_websockets: Option<bool>,
+    pub bridge_provider_websocket_compatible: bool,
+    pub upstream_probe_ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream_probe_status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream_probe_detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub login_status: Option<String>,
 }
 

@@ -174,13 +174,16 @@ async fn read_daemon_state(state_path: &std::path::Path) -> Result<Option<Daemon
 fn is_process_running(pid: u32) -> bool {
     #[cfg(windows)]
     {
-        Command::new("cmd")
-            .args([
-                "/C",
-                &format!("tasklist /FI \"PID eq {pid}\" | findstr /R \"\\<{pid}\\>\""),
-            ])
-            .status()
-            .map(|status| status.success())
+        Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| {
+                let text = String::from_utf8_lossy(&output.stdout);
+                text.lines()
+                    .any(|line| line.contains(&format!("\"{pid}\"")))
+            })
             .unwrap_or(false)
     }
     #[cfg(not(windows))]

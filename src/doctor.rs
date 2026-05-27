@@ -7,8 +7,10 @@ use crate::config::{load_bridge_config, public_bridge_config, resolve_api_key};
 use crate::daemon::{can_connect, daemon_status};
 use crate::error::Result;
 use crate::paths::{get_bridge_config_path, get_bridge_home, get_codex_config_path};
+use crate::proxy::to_upstream_url;
 use crate::startup::startup_status;
-use crate::toml_patch::{has_bridge_provider, top_level_model_provider};
+use crate::toml_patch::{has_bridge_provider, section_boolean, top_level_model_provider};
+use crate::types::BridgeConfig;
 use crate::types::DoctorResult;
 
 pub async fn doctor() -> Result<DoctorResult> {
@@ -25,6 +27,11 @@ pub async fn doctor() -> Result<DoctorResult> {
     } else {
         String::new()
     };
+    let provider_section = format!("model_providers.{}", config.provider_id);
+    let bridge_provider_supports_websockets =
+        section_boolean(&codex_config, &provider_section, "supports_websockets");
+    let (upstream_probe_ok, upstream_probe_status, upstream_probe_detail) =
+        probe_upstream(&config, key.api_key.as_deref());
 
     Ok(DoctorResult {
         bridge_config_path,
@@ -39,6 +46,11 @@ pub async fn doctor() -> Result<DoctorResult> {
         bridge_provider_configured: has_bridge_provider(&codex_config, &config.provider_id),
         model_provider_is_bridge: top_level_model_provider(&codex_config).as_deref()
             == Some(&config.provider_id),
+        bridge_provider_supports_websockets,
+        bridge_provider_websocket_compatible: bridge_provider_supports_websockets == Some(false),
+        upstream_probe_ok,
+        upstream_probe_status,
+        upstream_probe_detail,
         login_status: read_login_status(),
     })
 }
@@ -92,6 +104,15 @@ pub fn format_doctor_report(result: &DoctorResult) -> String {
             }
         ),
         format!(
+            "{} WebSocket 配置: {}",
+            mark(result.bridge_provider_websocket_compatible),
+            match result.bridge_provider_supports_websockets {
+                Some(false) => "已显式禁用 websocket，避免误走 Upgrade 链路".to_string(),
+                Some(true) => "当前 provider 配置仍为 supports_websockets=true，但 bridge 不支持 websocket。运行 codex-provider-bridge install 修复。".to_string(),
+                None => "当前 provider 未显式写入 supports_websockets=false。运行 codex-provider-bridge install 修复。".to_string(),
+            }
+        ),
+        format!(
             "{} 后台进程: {}",
             mark(result.daemon.running),
             if result.daemon.running {
@@ -113,6 +134,14 @@ pub fn format_doctor_report(result: &DoctorResult) -> String {
             } else {
                 "未监听，请运行 codex-provider-bridge start".to_string()
             }
+        ),
+        format!(
+            "{} 上游探活: {}",
+            mark(result.upstream_probe_ok),
+            result
+                .upstream_probe_detail
+                .clone()
+                .unwrap_or_else(|| "未执行".to_string())
         ),
         format!(
             "{} 日志文件: {}",
@@ -142,17 +171,7 @@ pub fn format_doctor_report(result: &DoctorResult) -> String {
                 .unwrap_or("未检测到，请先在 Codex 中登录 ChatGPT")
         ),
         String::new(),
-        if result.api_key_present
-            && result.bridge_provider_configured
-            && result.model_provider_is_bridge
-            && result.daemon.running
-            && result.port_open
-        {
-            "下一步: 重启 Codex。如果需要调试日志，运行 codex-provider-bridge status 查看日志位置。"
-                .to_string()
-        } else {
-            "下一步: 运行 codex-provider-bridge setup，根据提示完成配置。".to_string()
-        },
+        next_step(result),
     ];
     format!("{}\n", lines.join("\n"))
 }
@@ -163,6 +182,27 @@ fn mark(ok: bool) -> &'static str {
     } else {
         "[需要处理]"
     }
+}
+
+fn next_step(result: &DoctorResult) -> String {
+    if !result.api_key_present
+        || !result.bridge_provider_configured
+        || !result.model_provider_is_bridge
+    {
+        return "下一步: 运行 codex-provider-bridge setup，根据提示完成配置。".to_string();
+    }
+    if !result.bridge_provider_websocket_compatible {
+        return "下一步: 运行 codex-provider-bridge install 修复 provider 配置，然后重启 Codex。"
+            .to_string();
+    }
+    if !result.daemon.running || !result.port_open {
+        return "下一步: 运行 codex-provider-bridge start 启动本地桥接服务。".to_string();
+    }
+    if !result.upstream_probe_ok {
+        return "下一步: 检查上游服务可用性、网关超时和 API Key 权限。".to_string();
+    }
+    "下一步: 重启 Codex。如果需要调试日志，运行 codex-provider-bridge status 查看日志位置。"
+        .to_string()
 }
 
 fn read_login_status() -> Option<String> {
@@ -191,6 +231,67 @@ fn read_login_status() -> Option<String> {
         }
     }
     None
+}
+
+fn probe_upstream(
+    config: &BridgeConfig,
+    api_key: Option<&str>,
+) -> (bool, Option<u16>, Option<String>) {
+    let Some(api_key) = api_key else {
+        return (false, None, Some("跳过：未找到 API Key。".to_string()));
+    };
+    if config.upstream_base_url.trim().is_empty() {
+        return (false, None, Some("跳过：未配置上游地址。".to_string()));
+    }
+
+    let target = match to_upstream_url(
+        "/v1/models?client_version=doctor",
+        &config.upstream_base_url,
+    ) {
+        Ok(target) => target,
+        Err(error) => {
+            return (false, None, Some(format!("构造上游探活地址失败: {error}")));
+        }
+    };
+    let output_target = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let output = Command::new("curl")
+        .args([
+            "-sS",
+            "-o",
+            output_target,
+            "--max-time",
+            "10",
+            "--connect-timeout",
+            "5",
+            "-w",
+            "%{http_code}",
+            "-H",
+            &format!("Authorization: Bearer {api_key}"),
+            &target,
+        ])
+        .output();
+
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let status = stdout.parse::<u16>().ok().filter(|status| *status > 0);
+            let ok = matches!(status, Some(200));
+            let detail = if let Some(status) = status {
+                if stderr.is_empty() {
+                    format!("GET /models -> {status}")
+                } else {
+                    format!("GET /models -> {status} ({stderr})")
+                }
+            } else if stderr.is_empty() {
+                "GET /models 失败，未返回状态码".to_string()
+            } else {
+                format!("GET /models 失败: {stderr}")
+            };
+            (ok, status, Some(detail))
+        }
+        Err(error) => (false, None, Some(format!("调用 curl 探活失败: {error}"))),
+    }
 }
 
 async fn path_exists(path: &Path) -> bool {

@@ -202,24 +202,9 @@ async fn forward_with_curl(
         .stdout
         .take()
         .ok_or_else(|| err("failed to capture curl stdout"))?;
-    let mut buffer = Vec::new();
-    let header_end;
-    loop {
-        let mut chunk = [0u8; 4096];
-        let n = stdout.read(&mut chunk).await?;
-        if n == 0 {
-            return Err(err("upstream response missing headers"));
-        }
-        buffer.extend_from_slice(&chunk[..n]);
-        if let Some(index) = find_header_end(&buffer) {
-            header_end = index;
-            break;
-        }
-    }
-    let header_text = String::from_utf8_lossy(&buffer[..header_end]);
-    let (status, headers) = parse_response_headers(&header_text);
-    write_response_head(stream, status, &headers).await?;
-    stream.write_all(&buffer[header_end + 4..]).await?;
+    let (status, reason, headers, buffered_body) = read_upstream_head(&mut stdout).await?;
+    write_response_head(stream, status, &reason, &headers).await?;
+    stream.write_all(&buffered_body).await?;
     tokio::io::copy(&mut stdout, stream).await?;
     let _ = child.wait().await;
     Ok(status)
@@ -249,13 +234,16 @@ fn forwarded_headers(headers: &[(String, String)], api_key: &str) -> HashMap<Str
     outgoing
 }
 
-fn parse_response_headers(raw: &str) -> (u16, Vec<(String, String)>) {
+fn parse_response_headers(raw: &str) -> (u16, String, Vec<(String, String)>) {
     let mut lines = raw.split("\r\n");
-    let status = lines
+    let status_line = lines.next().unwrap_or_default();
+    let mut parts = status_line.split_whitespace();
+    let _ = parts.next();
+    let status = parts
         .next()
-        .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(502);
+    let reason = parts.collect::<Vec<_>>().join(" ");
     let blocked = [
         "content-encoding",
         "content-length",
@@ -269,23 +257,16 @@ fn parse_response_headers(raw: &str) -> (u16, Vec<(String, String)>) {
                 .then(|| (key.trim().to_string(), value.trim().to_string()))
         })
         .collect();
-    (status, headers)
+    (status, reason, headers)
 }
 
 async fn write_response_head(
     stream: &mut TcpStream,
     status: u16,
+    reason: &str,
     headers: &[(String, String)],
 ) -> Result<()> {
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        500 => "Internal Server Error",
-        502 => "Bad Gateway",
-        _ => "OK",
-    };
+    let reason = fallback_reason(status, reason);
     stream
         .write_all(format!("HTTP/1.1 {status} {reason}\r\n").as_bytes())
         .await?;
@@ -309,6 +290,59 @@ async fn write_json(stream: &mut TcpStream, status: u16, reason: &str, body: &st
         )
         .await?;
     Ok(())
+}
+
+async fn read_upstream_head(
+    stdout: &mut tokio::process::ChildStdout,
+) -> Result<(u16, String, Vec<(String, String)>, Vec<u8>)> {
+    let mut buffer = Vec::new();
+    loop {
+        while let Some(header_end) = find_header_end(&buffer) {
+            let header_text = String::from_utf8_lossy(&buffer[..header_end]);
+            let (status, reason, headers) = parse_response_headers(&header_text);
+            let remaining = buffer[header_end + 4..].to_vec();
+            if (100..200).contains(&status) && status != 101 {
+                buffer = remaining;
+                if buffer.is_empty() {
+                    break;
+                }
+                continue;
+            }
+            return Ok((status, reason, headers, remaining));
+        }
+
+        let mut chunk = [0u8; 4096];
+        let n = stdout.read(&mut chunk).await?;
+        if n == 0 {
+            return Err(err("upstream response missing final headers"));
+        }
+        buffer.extend_from_slice(&chunk[..n]);
+    }
+}
+
+fn fallback_reason<'a>(status: u16, upstream_reason: &'a str) -> &'a str {
+    if !upstream_reason.trim().is_empty() {
+        return upstream_reason;
+    }
+    match status {
+        100 => "Continue",
+        101 => "Switching Protocols",
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        408 => "Request Timeout",
+        409 => "Conflict",
+        422 => "Unprocessable Entity",
+        426 => "Upgrade Required",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "OK",
+    }
 }
 
 fn is_v1_path(incoming_url: &str) -> bool {
@@ -344,5 +378,20 @@ mod tests {
         let forwarded = forwarded_headers(&headers, "new");
         assert_eq!(forwarded.get("Authorization").unwrap(), "Bearer new");
         assert_eq!(forwarded.get("content-type").unwrap(), "application/json");
+    }
+
+    #[test]
+    fn parses_reason_phrase() {
+        let (status, reason, headers) = parse_response_headers(
+            "HTTP/1.1 504 Gateway Timeout\r\ncontent-type: application/json\r\n\r\n",
+        );
+        assert_eq!(status, 504);
+        assert_eq!(reason, "Gateway Timeout");
+        assert_eq!(headers[0].0, "content-type");
+    }
+
+    #[test]
+    fn falls_back_to_known_reason() {
+        assert_eq!(fallback_reason(426, ""), "Upgrade Required");
     }
 }

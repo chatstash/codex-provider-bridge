@@ -132,6 +132,7 @@ pub fn patch_codex_config(content: &str, config: &BridgeConfig) -> String {
             ),
             "wire_api = \"responses\"".to_string(),
             "requires_openai_auth = true".to_string(),
+            "supports_websockets = false".to_string(),
         ],
     )
 }
@@ -142,6 +143,25 @@ pub fn has_bridge_provider(content: &str, provider_id: &str) -> bool {
         .map(ToString::to_string)
         .collect();
     find_section(&lines, &format!("model_providers.{provider_id}")).is_some()
+}
+
+pub fn section_boolean(content: &str, section: &str, key: &str) -> Option<bool> {
+    let lines: Vec<String> = ensure_trailing_newline(content)
+        .lines()
+        .map(ToString::to_string)
+        .collect();
+    let (start, end) = find_section(&lines, section)?;
+    lines[start + 1..end].iter().find_map(|line| {
+        let trimmed = line.trim();
+        let prefix = format!("{key} ");
+        let rest = trimmed.strip_prefix(&prefix)?;
+        let (_, value) = rest.split_once('=')?;
+        match value.trim() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        }
+    })
 }
 
 pub fn top_level_model_provider(content: &str) -> Option<String> {
@@ -178,6 +198,7 @@ mod tests {
         assert!(patched.contains("remote_control = true"));
         assert!(patched.contains("[model_providers.codex_provider_bridge]"));
         assert!(patched.contains("requires_openai_auth = true"));
+        assert!(patched.contains("supports_websockets = false"));
         assert!(patched.contains("[model_providers.openai]"));
     }
 
@@ -187,5 +208,21 @@ mod tests {
         let once = patch_codex_config("", &config);
         let twice = patch_codex_config(&once, &config);
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn reads_section_boolean() {
+        let content = r#"
+[model_providers.codex_provider_bridge]
+supports_websockets = false
+"#;
+        assert_eq!(
+            section_boolean(
+                content,
+                "model_providers.codex_provider_bridge",
+                "supports_websockets"
+            ),
+            Some(false)
+        );
     }
 }
